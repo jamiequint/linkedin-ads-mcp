@@ -12,7 +12,8 @@ import { LinkedInApiError } from "../dist/errors.js";
 
 const TEST_CONFIG = {
   LINKEDIN_ACCESS_TOKEN: "test-token",
-  LINKEDIN_API_VERSION: "202407",
+  LINKEDIN_API_VERSION: "202610",
+  LINKEDIN_ENABLE_WRITES: false,
   MCP_SERVER_NAME: "test-server",
   MCP_SERVER_VERSION: "1.0.0",
 };
@@ -130,6 +131,40 @@ describe("LinkedInApiClient — request core", () => {
     assert.deepStrictEqual(result, { ok: true });
   });
 
+  it("does not retry a POST after a 500 response", async () => {
+    const client = new LinkedInApiClient(TEST_CONFIG);
+    mockFetch([
+      makeResponse({ status: 500, statusText: "Internal Server Error" }),
+      makeResponse({ status: 201, body: { id: "duplicate" } }),
+    ]);
+
+    await assert.rejects(() => client.post("/dmpSegments", { name: "Audience" }), LinkedInApiError);
+    assert.strictEqual(fetchCalls.length, 1);
+  });
+
+  it("does not retry a POST after a network failure with an unknown outcome", async () => {
+    const client = new LinkedInApiClient(TEST_CONFIG);
+    let calls = 0;
+    global.fetch = async () => {
+      calls += 1;
+      throw new TypeError("socket closed after upload");
+    };
+
+    await assert.rejects(() => client.post("/dmpSegments/123/users", { elements: [] }), /socket closed/);
+    assert.strictEqual(calls, 1);
+  });
+
+  it("does not retry a rate-limited POST", async () => {
+    const client = new LinkedInApiClient(TEST_CONFIG);
+    mockFetch([
+      makeResponse({ status: 429, statusText: "Too Many Requests", headers: { "retry-after": "30" } }),
+      makeResponse({ status: 201 }),
+    ]);
+
+    await assert.rejects(() => client.post("/dmpSegments", { name: "Audience" }), LinkedInApiError);
+    assert.strictEqual(fetchCalls.length, 1);
+  });
+
   it("throws LinkedInApiError after exhausting retries", async () => {
     const client = new LinkedInApiClient(TEST_CONFIG);
     mockFetch([
@@ -213,6 +248,46 @@ describe("LinkedInApiClient — request core", () => {
     mockFetch(makeResponse({ body: {} }));
     await client.post("/test", { patch: { $set: {} } }, { restliMethod: "PARTIAL_UPDATE" });
     assert.strictEqual(fetchCalls[0].init.headers["X-RestLi-Method"], "PARTIAL_UPDATE");
+  });
+
+  it("serializes nested Rest.li search criteria without encoding structure", async () => {
+    const client = new LinkedInApiClient(TEST_CONFIG);
+    mockFetch(makeResponse({ body: { elements: [] } }));
+
+    await client.listCampaigns("123", {
+      campaignGroupIds: ["456"],
+      status: ["ACTIVE", "PAUSED"],
+    });
+
+    const url = fetchCalls[0].url;
+    assert.ok(
+      url.includes(
+        "search=(campaignGroup:(values:List(urn%3Ali%3AsponsoredCampaignGroup%3A456)),status:(values:List(ACTIVE,PAUSED)))"
+      ),
+      url
+    );
+  });
+
+  it("preserves Rest.li structure while encoding URNs in complex parameters", async () => {
+    const client = new LinkedInApiClient(TEST_CONFIG);
+    mockFetch(makeResponse({ body: { elements: [] } }));
+
+    await client.listLeadForms("123");
+
+    assert.ok(
+      fetchCalls[0].url.includes("owner=(sponsoredAccount:urn%3Ali%3AsponsoredAccount%3A123)"),
+      fetchCalls[0].url
+    );
+  });
+
+  it("fully URL-encodes URN resource keys in paths", async () => {
+    const client = new LinkedInApiClient(TEST_CONFIG);
+    mockFetch(makeResponse({ body: { id: "urn:li:sponsoredCreative:9" } }));
+
+    await client.getCreative("123", "urn:li:sponsoredCreative:9");
+
+    assert.ok(fetchCalls[0].url.includes("/creatives/urn%3Ali%3AsponsoredCreative%3A9"));
+    assert.ok(fetchCalls[0].url.includes("fields="));
   });
 
   it("extracts requestId from response headers in errors", async () => {

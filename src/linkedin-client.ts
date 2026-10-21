@@ -19,6 +19,14 @@ import type {
 
 const LINKEDIN_API_BASE = "https://api.linkedin.com/rest";
 
+interface RestliExpression {
+  restli: string;
+}
+
+type QueryValue = string | string[] | number | boolean | RestliExpression | undefined;
+
+const restli = (value: string): RestliExpression => ({ restli: value });
+
 // Default metric sets for different report types
 const DEFAULT_PERFORMANCE_METRICS = [
   "impressions",
@@ -40,6 +48,8 @@ const DEFAULT_CREATIVE_METRICS = [
   "shares",
   "reactions",
   "follows",
+  "memberFollows",
+  "memberProfileClicks",
 ];
 
 const VIDEO_METRICS = [
@@ -51,22 +61,14 @@ const VIDEO_METRICS = [
   "videoThirdQuartileCompletions",
 ];
 
-const LEAD_GEN_METRICS = [
-  "oneClickLeads",
-  "oneClickLeadFormOpens",
-  "qualifiedLeads",
-];
+const LEAD_GEN_METRICS = ["oneClickLeads", "oneClickLeadFormOpens", "qualifiedLeads"];
 
-const REACH_METRICS = [
-  "approximateMemberReach",
-  "impressions",
-  "audiencePenetration",
-];
+const REACH_METRICS = ["approximateMemberReach", "impressions", "audiencePenetration"];
 
 interface RequestOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: unknown;
-  params?: Record<string, string | string[] | number | boolean | undefined>;
+  params?: Record<string, QueryValue>;
   restliMethod?:
     | "FINDER"
     | "BATCH_GET"
@@ -92,20 +94,21 @@ export class LinkedInApiClient {
   // ==================== Core HTTP ====================
 
   private async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+    const method = options.method ?? "GET";
     let urlString = `${LINKEDIN_API_BASE}${endpoint}`;
     const queryParts: string[] = [];
 
     if (options.params) {
       for (const [key, value] of Object.entries(options.params)) {
         if (value !== undefined) {
-          if (Array.isArray(value)) {
-            queryParts.push(
-              `${key}=List(${value.map((v) => encodeURIComponent(v)).join(",")})`
-            );
+          if (typeof value === "object" && "restli" in value) {
+            queryParts.push(`${encodeURIComponent(key)}=${value.restli}`);
+          } else if (Array.isArray(value)) {
+            queryParts.push(`${encodeURIComponent(key)}=List(${value.map((v) => encodeURIComponent(v)).join(",")})`);
           } else if (key === "fields" || key === "dateRange") {
-            queryParts.push(`${key}=${value}`);
+            queryParts.push(`${encodeURIComponent(key)}=${value}`);
           } else {
-            queryParts.push(`${key}=${encodeURIComponent(String(value))}`);
+            queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
           }
         }
       }
@@ -117,7 +120,7 @@ export class LinkedInApiClient {
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.config.LINKEDIN_ACCESS_TOKEN}`,
-      "LinkedIn-Version": this.config.LINKEDIN_API_VERSION,
+      "Linkedin-Version": this.config.LINKEDIN_API_VERSION,
       "X-Restli-Protocol-Version": "2.0.0",
     };
 
@@ -129,39 +132,40 @@ export class LinkedInApiClient {
       headers["Content-Type"] = "application/json";
     }
 
-    let lastError: Error | null = null;
+    // GET is the only method retried automatically. A failed POST may already
+    // have committed remotely, so replaying it can duplicate spend or data.
+    const maxAttempts = method === "GET" ? this.retryCount : 1;
 
-    for (let attempt = 0; attempt < this.retryCount; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         const response = await fetch(urlString, {
-          method: options.method || "GET",
+          method,
           headers,
           body: options.body ? JSON.stringify(options.body) : undefined,
         });
 
         const requestId = response.headers.get("x-linkedin-request-id") ?? undefined;
         const retryAfterHeader = response.headers.get("retry-after");
-        const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
-
-        // Handle rate limiting
-        if (response.status === 429) {
-          const waitTime = retryAfter
-            ? retryAfter * 1000
-            : this.retryDelay * Math.pow(2, attempt);
-          console.error(`Rate limited. Waiting ${waitTime}ms before retry...`);
-          await this.sleep(waitTime);
-          continue;
-        }
+        const retryAfter = this.parseRetryAfter(retryAfterHeader);
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new LinkedInApiError(
+          const apiError = new LinkedInApiError(
             response.status,
             `LinkedIn API error: ${response.status} ${response.statusText}`,
             errorText,
             requestId,
             retryAfter
           );
+
+          const retryableStatus = response.status === 408 || response.status === 429 || response.status >= 500;
+          if (retryableStatus && attempt < maxAttempts - 1) {
+            const waitTime = retryAfter !== undefined ? retryAfter * 1000 : this.retryDelay * Math.pow(2, attempt);
+            console.error(`GET request failed with ${response.status}; retrying in ${waitTime}ms...`);
+            await this.sleep(waitTime);
+            continue;
+          }
+          throw apiError;
         }
 
         // Return raw response if requested
@@ -181,25 +185,31 @@ export class LinkedInApiClient {
 
         return (await response.json()) as T;
       } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
-
-        // Don't retry auth errors
-        if (
-          lastError instanceof LinkedInApiError &&
-          (lastError.statusCode === 401 || lastError.statusCode === 403)
-        ) {
-          throw lastError;
+        const requestError = error instanceof Error ? error : new Error(String(error));
+        if (requestError instanceof LinkedInApiError) {
+          throw requestError;
         }
 
-        if (attempt < this.retryCount - 1) {
+        if (attempt < maxAttempts - 1) {
           const waitTime = this.retryDelay * Math.pow(2, attempt);
-          console.error(`Request failed, retrying in ${waitTime}ms...`);
+          console.error(`GET request failed; retrying in ${waitTime}ms...`);
           await this.sleep(waitTime);
+          continue;
         }
+        throw requestError;
       }
     }
 
-    throw lastError || new Error("Request failed after retries");
+    throw new Error("Request failed after retries");
+  }
+
+  private parseRetryAfter(value: string | null): number | undefined {
+    if (!value) return undefined;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+    const retryDate = Date.parse(value);
+    if (Number.isNaN(retryDate)) return undefined;
+    return Math.max(0, Math.ceil((retryDate - Date.now()) / 1000));
   }
 
   private sleep(ms: number): Promise<void> {
@@ -226,9 +236,7 @@ export class LinkedInApiClient {
 
   formatDateRange(startDate: string, endDate?: string): string {
     const start = this.parseDate(startDate);
-    const end = endDate
-      ? this.parseDate(endDate)
-      : this.parseDate(new Date().toISOString().split("T")[0]);
+    const end = endDate ? this.parseDate(endDate) : this.parseDate(new Date().toISOString().split("T")[0]);
     return `(start:(year:${start.year},month:${start.month},day:${start.day}),end:(year:${end.year},month:${end.month},day:${end.day}))`;
   }
 
@@ -239,18 +247,22 @@ export class LinkedInApiClient {
 
   // ==================== Accounts ====================
 
-  async listAdAccounts(options: {
-    status?: string[];
-    type?: string;
-    includeTest?: boolean;
-  } = {}): Promise<AdAccount[]> {
-    const params: Record<string, string | string[]> = { q: "search" };
+  async listAdAccounts(
+    options: {
+      status?: string[];
+      type?: string;
+      includeTest?: boolean;
+    } = {}
+  ): Promise<AdAccount[]> {
+    const criteria: string[] = [];
     if (options.status?.length) {
-      params["search.status.values"] = options.status;
+      criteria.push(`status:(values:List(${options.status.map(encodeURIComponent).join(",")}))`);
     }
     if (options.type) {
-      params["search.type.values"] = [options.type];
+      criteria.push(`type:(values:List(${encodeURIComponent(options.type)}))`);
     }
+    const params: Record<string, QueryValue> = { q: "search" };
+    if (criteria.length) params.search = restli(`(${criteria.join(",")})`);
 
     const response = await this.get<LinkedInApiResponse<AdAccount>>("/adAccounts", params);
     let accounts = response.elements || [];
@@ -267,10 +279,12 @@ export class LinkedInApiClient {
   // ==================== Campaign Groups ====================
 
   async listCampaignGroups(accountId: string, options: { status?: string[] } = {}): Promise<CampaignGroup[]> {
-    const params: Record<string, string | string[]> = { q: "search" };
+    const criteria: string[] = [];
     if (options.status?.length) {
-      params["search.status.values"] = options.status;
+      criteria.push(`status:(values:List(${options.status.map(encodeURIComponent).join(",")}))`);
     }
+    const params: Record<string, QueryValue> = { q: "search" };
+    if (criteria.length) params.search = restli(`(${criteria.join(",")})`);
     const response = await this.get<LinkedInApiResponse<CampaignGroup>>(
       `/adAccounts/${accountId}/adCampaignGroups`,
       params
@@ -293,10 +307,18 @@ export class LinkedInApiClient {
     });
   }
 
-  async updateCampaignGroup(accountId: string, campaignGroupId: string, updates: Record<string, unknown>): Promise<void> {
-    await this.post<void>(`/adAccounts/${accountId}/adCampaignGroups/${campaignGroupId}`, {
-      patch: { $set: updates },
-    }, { restliMethod: "PARTIAL_UPDATE" });
+  async updateCampaignGroup(
+    accountId: string,
+    campaignGroupId: string,
+    updates: Record<string, unknown>
+  ): Promise<void> {
+    await this.post<void>(
+      `/adAccounts/${accountId}/adCampaignGroups/${campaignGroupId}`,
+      {
+        patch: { $set: updates },
+      },
+      { restliMethod: "PARTIAL_UPDATE" }
+    );
   }
 
   async deleteCampaignGroup(accountId: string, campaignGroupId: string, isDraft: boolean): Promise<void> {
@@ -309,16 +331,23 @@ export class LinkedInApiClient {
 
   // ==================== Campaigns ====================
 
-  async listCampaigns(accountId: string, options: { campaignGroupIds?: string[]; status?: string[] } = {}): Promise<Campaign[]> {
-    const params: Record<string, string | string[]> = { q: "search" };
+  async listCampaigns(
+    accountId: string,
+    options: { campaignGroupIds?: string[]; status?: string[] } = {}
+  ): Promise<Campaign[]> {
+    const criteria: string[] = [];
     if (options.campaignGroupIds?.length) {
-      params["search.campaignGroup.values"] = options.campaignGroupIds.map(
-        (id) => `urn:li:sponsoredCampaignGroup:${id}`
+      criteria.push(
+        `campaignGroup:(values:List(${options.campaignGroupIds
+          .map((id) => encodeURIComponent(`urn:li:sponsoredCampaignGroup:${id}`))
+          .join(",")}))`
       );
     }
     if (options.status?.length) {
-      params["search.status.values"] = options.status;
+      criteria.push(`status:(values:List(${options.status.map(encodeURIComponent).join(",")}))`);
     }
+    const params: Record<string, QueryValue> = { q: "search" };
+    if (criteria.length) params.search = restli(`(${criteria.join(",")})`);
     const response = await this.get<LinkedInApiResponse<Campaign>>(`/adAccounts/${accountId}/adCampaigns`, params);
     return response.elements || [];
   }
@@ -345,14 +374,24 @@ export class LinkedInApiClient {
   }
 
   async createCampaign(accountId: string, data: Record<string, unknown>): Promise<{ id: string }> {
-    const body = { account: `urn:li:sponsoredAccount:${accountId}`, ...data };
+    const body: Record<string, unknown> = {
+      account: `urn:li:sponsoredAccount:${accountId}`,
+      ...data,
+    };
+    if (typeof body.campaignGroup === "string" && !body.campaignGroup.startsWith("urn:")) {
+      body.campaignGroup = `urn:li:sponsoredCampaignGroup:${body.campaignGroup}`;
+    }
     return this.post<{ id: string }>(`/adAccounts/${accountId}/adCampaigns`, body);
   }
 
   async updateCampaign(accountId: string, campaignId: string, updates: Record<string, unknown>): Promise<void> {
-    await this.post<void>(`/adAccounts/${accountId}/adCampaigns/${campaignId}`, {
-      patch: { $set: updates },
-    }, { restliMethod: "PARTIAL_UPDATE" });
+    await this.post<void>(
+      `/adAccounts/${accountId}/adCampaigns/${campaignId}`,
+      {
+        patch: { $set: updates },
+      },
+      { restliMethod: "PARTIAL_UPDATE" }
+    );
   }
 
   async deleteCampaign(accountId: string, campaignId: string, isDraft: boolean): Promise<void> {
@@ -365,7 +404,10 @@ export class LinkedInApiClient {
 
   // ==================== Creatives ====================
 
-  async listCreatives(accountId: string, options: { campaignIds?: string[]; creativeIds?: string[]; pageSize?: number } = {}): Promise<AdCreative[]> {
+  async listCreatives(
+    accountId: string,
+    options: { campaignIds?: string[]; creativeIds?: string[]; pageSize?: number } = {}
+  ): Promise<AdCreative[]> {
     const params: Record<string, string | string[]> = {
       q: "criteria",
       pageSize: String(options.pageSize ?? 100),
@@ -376,10 +418,10 @@ export class LinkedInApiClient {
     if (options.creativeIds?.length) {
       params.creatives = options.creativeIds.map((id) => `urn:li:sponsoredCreative:${id}`);
     }
-    const response = await this.request<LinkedInApiResponse<AdCreative>>(
-      `/adAccounts/${accountId}/creatives`,
-      { params, restliMethod: "FINDER" }
-    );
+    const response = await this.request<LinkedInApiResponse<AdCreative>>(`/adAccounts/${accountId}/creatives`, {
+      params,
+      restliMethod: "FINDER",
+    });
     return response.elements || [];
   }
 
@@ -388,7 +430,9 @@ export class LinkedInApiClient {
       const encodedId = encodeURIComponent(
         creativeId.startsWith("urn:") ? creativeId : `urn:li:sponsoredCreative:${creativeId}`
       );
-      return await this.get<AdCreative>(`/adAccounts/${accountId}/creatives/${encodedId}`);
+      return await this.get<AdCreative>(`/adAccounts/${accountId}/creatives/${encodedId}`, {
+        fields: "id,account,campaign,status,type,content,review,name,metadata,changeAuditStamps",
+      });
     } catch {
       return null;
     }
@@ -413,7 +457,11 @@ export class LinkedInApiClient {
   }
 
   async createCreative(accountId: string, data: Record<string, unknown>): Promise<{ id: string }> {
-    return this.post<{ id: string }>(`/adAccounts/${accountId}/creatives`, data);
+    const body = { ...data };
+    if (typeof body.campaign === "string" && !body.campaign.startsWith("urn:")) {
+      body.campaign = `urn:li:sponsoredCampaign:${body.campaign}`;
+    }
+    return this.post<{ id: string }>(`/adAccounts/${accountId}/creatives`, body);
   }
 
   async createInlineCreative(accountId: string, data: Record<string, unknown>): Promise<{ id: string }> {
@@ -426,9 +474,13 @@ export class LinkedInApiClient {
     const encodedId = encodeURIComponent(
       creativeId.startsWith("urn:") ? creativeId : `urn:li:sponsoredCreative:${creativeId}`
     );
-    await this.post<void>(`/adAccounts/${accountId}/creatives/${encodedId}`, {
-      patch: { $set: updates },
-    }, { restliMethod: "PARTIAL_UPDATE" });
+    await this.post<void>(
+      `/adAccounts/${accountId}/creatives/${encodedId}`,
+      {
+        patch: { $set: updates },
+      },
+      { restliMethod: "PARTIAL_UPDATE" }
+    );
   }
 
   // ==================== Content Resolution ====================
@@ -607,9 +659,7 @@ export class LinkedInApiClient {
     timeGranularity?: TimeGranularity;
     includeVideoMetrics?: boolean;
   }): Promise<AnalyticsRow[]> {
-    let metrics = DEFAULT_CREATIVE_METRICS.filter(
-      (m) => m !== "audiencePenetration" && m !== "costInLocalCurrency"
-    );
+    let metrics = DEFAULT_CREATIVE_METRICS.filter((m) => m !== "audiencePenetration" && m !== "costInLocalCurrency");
     if (options.includeVideoMetrics !== false) {
       metrics = [...metrics, ...VIDEO_METRICS];
     }
@@ -732,9 +782,9 @@ export class LinkedInApiClient {
   // ==================== Lead Gen ====================
 
   async listLeadForms(accountId: string, status?: string[]): Promise<LeadGenForm[]> {
-    const params: Record<string, string | string[]> = {
+    const params: Record<string, QueryValue> = {
       q: "owner",
-      owner: `(sponsoredAccount:urn:li:sponsoredAccount:${accountId})`,
+      owner: restli(`(sponsoredAccount:${encodeURIComponent(`urn:li:sponsoredAccount:${accountId}`)})`),
     };
     const response = await this.get<LinkedInApiResponse<LeadGenForm>>("/leadForms", params);
     let forms = response.elements || [];
@@ -746,7 +796,10 @@ export class LinkedInApiClient {
 
   // ==================== Audiences ====================
 
-  async listSavedAudiences(accountId: string, options: { status?: string[]; type?: string } = {}): Promise<SavedAudience[]> {
+  async listSavedAudiences(
+    accountId: string,
+    options: { status?: string[]; type?: string } = {}
+  ): Promise<SavedAudience[]> {
     const params: Record<string, string> = {
       q: "account",
       account: `urn:li:sponsoredAccount:${accountId}`,
@@ -754,12 +807,67 @@ export class LinkedInApiClient {
     const response = await this.get<LinkedInApiResponse<SavedAudience>>("/dmpSegments", params);
     let audiences = response.elements || [];
     if (options.status?.length) {
-      audiences = audiences.filter((a) => options.status!.includes(a.status));
+      audiences = audiences.filter((a) => a.status !== undefined && options.status!.includes(a.status));
     }
     if (options.type) {
       audiences = audiences.filter((a) => a.type === options.type);
     }
     return audiences;
+  }
+
+  async getSavedAudience(segmentId: string): Promise<SavedAudience> {
+    return this.get<SavedAudience>(`/dmpSegments/${encodeURIComponent(segmentId)}`);
+  }
+
+  async createSavedAudience(data: {
+    accountId: string;
+    name: string;
+    type: "USER" | "COMPANY" | "USER_LIST_UPLOAD" | "COMPANY_LIST_UPLOAD";
+    sourcePlatform: "DIRECT_API" | "AGENCY_API" | "PARTNER_API" | "LIST_UPLOAD";
+    description?: string;
+    sourceSegmentId?: string;
+  }): Promise<{ id: string }> {
+    const body: Record<string, unknown> = {
+      account: `urn:li:sponsoredAccount:${data.accountId}`,
+      name: data.name,
+      type: data.type,
+      sourcePlatform: data.sourcePlatform,
+      destinations: [{ destination: "LINKEDIN" }],
+    };
+    if (data.description) body.description = data.description;
+    if (data.sourceSegmentId) body.sourceSegmentId = data.sourceSegmentId;
+    return this.post<{ id: string }>("/dmpSegments", body);
+  }
+
+  async updateSavedAudience(
+    segmentId: string,
+    updates: { name?: string; description?: string; sourceSegmentId?: string }
+  ): Promise<void> {
+    await this.post<void>(
+      `/dmpSegments/${encodeURIComponent(segmentId)}`,
+      { patch: { $set: updates } },
+      { restliMethod: "PARTIAL_UPDATE" }
+    );
+  }
+
+  async deleteSavedAudience(segmentId: string): Promise<void> {
+    await this.delete(`/dmpSegments/${encodeURIComponent(segmentId)}`);
+  }
+
+  async mutateSavedAudienceUsers(segmentId: string, elements: Array<Record<string, unknown>>): Promise<unknown> {
+    return this.post<unknown>(
+      `/dmpSegments/${encodeURIComponent(segmentId)}/users`,
+      { elements },
+      { restliMethod: "BATCH_CREATE" }
+    );
+  }
+
+  async mutateSavedAudienceCompanies(segmentId: string, elements: Array<Record<string, unknown>>): Promise<unknown> {
+    return this.post<unknown>(
+      `/dmpSegments/${encodeURIComponent(segmentId)}/companies`,
+      { elements },
+      { restliMethod: "BATCH_CREATE" }
+    );
   }
 
   // ==================== Image Upload ====================

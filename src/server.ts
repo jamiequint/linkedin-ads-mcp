@@ -1,9 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Config } from "./config.js";
 import { LinkedInApiClient } from "./linkedin-client.js";
 import { ToolRegistry } from "./tool-registry.js";
@@ -15,6 +12,7 @@ import { ReportingTools } from "./tools/reporting.js";
 import { DemographicsTools } from "./tools/demographics.js";
 import { ConversionsTools } from "./tools/conversions.js";
 import { AnalyticsTools } from "./tools/analytics.js";
+import { AudienceTools } from "./tools/audiences.js";
 
 export class LinkedInAdsMcpServer {
   private server: Server;
@@ -34,7 +32,7 @@ export class LinkedInAdsMcpServer {
       }
     );
     this.apiClient = new LinkedInApiClient(config);
-    this.toolRegistry = new ToolRegistry();
+    this.toolRegistry = new ToolRegistry(config.LINKEDIN_ENABLE_WRITES);
 
     // Register all tool modules
     new AccountTools(this.apiClient).registerTools(this.toolRegistry);
@@ -45,6 +43,7 @@ export class LinkedInAdsMcpServer {
     new DemographicsTools(this.apiClient).registerTools(this.toolRegistry);
     new ConversionsTools(this.apiClient).registerTools(this.toolRegistry);
     new AnalyticsTools(this.apiClient).registerTools(this.toolRegistry);
+    new AudienceTools(this.apiClient).registerTools(this.toolRegistry);
   }
 
   async start(): Promise<void> {
@@ -80,8 +79,7 @@ export class LinkedInAdsMcpServer {
         const result = await handler(args);
         return result;
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
         return {
           content: [
             {

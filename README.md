@@ -1,6 +1,6 @@
 # LinkedIn Ads MCP Server
 
-A Model Context Protocol (MCP) server that exposes the [LinkedIn Marketing API](https://learn.microsoft.com/en-us/linkedin/marketing/) as AI-callable tools. Manage campaigns, analyze demographics, track conversions, and optimize ad performance — all via natural language.
+A Model Context Protocol (MCP) server that exposes the [LinkedIn Marketing API](https://learn.microsoft.com/en-us/linkedin/marketing/) as AI-callable tools. Inspect campaigns, analyze demographics, track conversions, and manage Matched Audiences through natural language. The server is read-only unless writes are explicitly enabled.
 
 Built for Claude Desktop and any MCP-compatible client.
 
@@ -8,12 +8,15 @@ Built for Claude Desktop and any MCP-compatible client.
 
 ## Features
 
-- **31 MCP Tools** across accounts, campaigns, creatives, audiences, conversions, and analytics
+- **37 MCP Tools** across accounts, campaigns, creatives, Matched Audiences, conversions, and analytics; 22 are visible in default read-only mode
+- **Read-Only by Default** — mutating tools are hidden and refused unless `LINKEDIN_ENABLE_WRITES=true`
+- **October 2026 API Compatibility** — defaults to Marketing API `202610`, supports creative metadata/enriched content, and emits Rest.li 2.0 query syntax
+- **Matched Audiences** — create, inspect, update, and delete DMP segments; batch add/remove user or company identifiers
 - **Standard Metrics on Every Report** — CTR, CPC, CPM, conversion rate, cost per conversion, audience penetration, average dwell time
 - **Audience Demographics** — Break down performance by job function, seniority, industry, company size, geography
 - **Conversions & Lead Gen** — Track conversion actions, lead form submissions, qualified leads, cost/lead
 - **Advanced Analytics** — Period comparisons, daily trends with weekday analysis
-- **Production-Grade API Client** — Exponential backoff, rate limit handling, RestLi partial updates, batch fetching
+- **Retry-Safe API Client** — retries transient GET failures with backoff but never blindly replays POST, PUT, or DELETE requests
 - **Creative Content Resolution** — Automatically resolves post/share content, image URLs, detects content type (IMAGE, VIDEO, CAROUSEL, ARTICLE, TEXT)
 - **Image Upload** — Two-step LinkedIn upload (initialize → PUT binary) for use in inline ads
 - **Draft-Aware Deletes** — Draft entities delete immediately; live entities set to `PENDING_DELETION`
@@ -44,7 +47,8 @@ Set the following environment variables:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `LINKEDIN_ACCESS_TOKEN` | Yes | — | LinkedIn OAuth 2.0 access token |
-| `LINKEDIN_API_VERSION` | No | `202407` | LinkedIn API version header |
+| `LINKEDIN_API_VERSION` | No | `202610` | LinkedIn Marketing API version header |
+| `LINKEDIN_ENABLE_WRITES` | No | `false` | Set to `true` to expose and allow mutating tools |
 | `MCP_SERVER_NAME` | No | `linkedin-ads-mcp` | Server identifier |
 | `MCP_SERVER_VERSION` | No | `1.1.0` | Server version |
 
@@ -52,6 +56,7 @@ Create a `.env` file in the project root:
 
 ```bash
 LINKEDIN_ACCESS_TOKEN=your_token_here
+LINKEDIN_ENABLE_WRITES=false
 ```
 
 Or run inline:
@@ -92,6 +97,8 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 ### Campaign Groups
 
+Mutating tools in this and later sections are visible only when `LINKEDIN_ENABLE_WRITES=true`.
+
 | Tool | Description |
 |------|-------------|
 | `linkedin_ads_list_campaign_groups` | List groups with optional performance metrics |
@@ -116,7 +123,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 | Tool | Description |
 |------|-------------|
 | `linkedin_ads_list_creatives` | List creatives for a campaign or account |
-| `linkedin_ads_get_creative` | Get a single creative |
+| `linkedin_ads_get_creative` | Get a single creative, including `202610` metadata when available |
 | `linkedin_ads_create_creative` | Create from an existing post or share |
 | `linkedin_ads_create_inline_ad` | Create an ad with inline content (text, image, CTA) |
 | `linkedin_ads_update_creative_status` | Activate, pause, or archive |
@@ -129,7 +136,15 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 |------|-------------|
 | `linkedin_ads_get_audience_demographics` | Breakdown by job function, industry, seniority, geo, etc. |
 | `linkedin_ads_get_audience_reach` | Unique reach, frequency, audience penetration (≤92 days) |
-| `linkedin_ads_list_saved_audiences` | Matched, lookalike, and predictive audiences |
+| `linkedin_ads_list_saved_audiences` | List Matched Audience DMP segments |
+| `linkedin_ads_get_custom_audience` | Get one DMP segment and processing status |
+| `linkedin_ads_create_custom_audience` | Create a USER, COMPANY, or list-upload segment (write mode) |
+| `linkedin_ads_update_custom_audience` | Update mutable DMP segment fields (write mode) |
+| `linkedin_ads_delete_custom_audience` | Permanently delete a DMP segment (write mode) |
+| `linkedin_ads_mutate_custom_audience_users` | Batch add/remove hashed user identifiers (write mode) |
+| `linkedin_ads_mutate_custom_audience_companies` | Batch add/remove companies (write mode) |
+
+Matched Audiences require LinkedIn approval, the separate `rw_dmp_segments` scope, and an ad account role other than `VIEWER`. The user tools accept only pre-hashed email identifiers; never pass plaintext email addresses. A newly created streaming segment can take several seconds before accepting members, and audience processing is asynchronous.
 
 ### Conversions & Lead Gen
 
@@ -186,6 +201,8 @@ Every performance and demographics report includes these calculated KPIs:
 "What's my cost per lead for lead gen campaigns?"
 "Show me daily trends for the last 14 days"
 "List my saved audiences"
+"Create a USER custom audience named Webinar registrants"
+"Add these SHA-256 email hashes to custom audience 123"
 "Upload an image for my new ad"
 "Create an inline ad with this text and image"
 "Pause all campaigns in campaign group X"
@@ -204,7 +221,9 @@ npm test
 
 This validates:
 - Server startup without crashing
-- All 31 tools are registered with valid schemas
+- The 22 default read-only tools are registered with valid schemas
+- Mutating tools are hidden and refused unless write mode is explicitly enabled
+- Non-idempotent writes are never automatically retried
 - Graceful error handling with invalid auth
 - Input validation rejects missing required fields
 - Unknown tools return a proper "not found" error
@@ -252,6 +271,7 @@ npm start
 │       ├── creatives.ts      # Creative CRUD + image upload + performance
 │       ├── reporting.ts      # Raw analytics + campaign stats
 │       ├── demographics.ts   # Audience demographics + reach + saved audiences
+│       ├── audiences.ts      # Matched Audience DMP segment management
 │       ├── conversions.ts    # Conversions + lead gen + lead forms
 │       └── analytics.ts      # Compare performance + daily trends
 ├── .env                      # Environment variables (not committed)

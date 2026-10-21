@@ -29,12 +29,14 @@ describe("loadConfig", () => {
   it("returns config with defaults when only token is set", () => {
     process.env.LINKEDIN_ACCESS_TOKEN = "test_token_123";
     delete process.env.LINKEDIN_API_VERSION;
+    delete process.env.LINKEDIN_ENABLE_WRITES;
     delete process.env.MCP_SERVER_NAME;
     delete process.env.MCP_SERVER_VERSION;
 
     const config = loadConfig();
     assert.strictEqual(config.LINKEDIN_ACCESS_TOKEN, "test_token_123");
-    assert.strictEqual(config.LINKEDIN_API_VERSION, "202407");
+    assert.strictEqual(config.LINKEDIN_API_VERSION, "202610");
+    assert.strictEqual(config.LINKEDIN_ENABLE_WRITES, false);
     assert.strictEqual(config.MCP_SERVER_NAME, "linkedin-ads-mcp");
     assert.strictEqual(config.MCP_SERVER_VERSION, "1.0.0");
   });
@@ -42,11 +44,13 @@ describe("loadConfig", () => {
   it("overrides defaults with environment variables", () => {
     process.env.LINKEDIN_ACCESS_TOKEN = "token";
     process.env.LINKEDIN_API_VERSION = "202604";
+    process.env.LINKEDIN_ENABLE_WRITES = "true";
     process.env.MCP_SERVER_NAME = "custom-name";
     process.env.MCP_SERVER_VERSION = "2.0.0";
 
     const config = loadConfig();
     assert.strictEqual(config.LINKEDIN_API_VERSION, "202604");
+    assert.strictEqual(config.LINKEDIN_ENABLE_WRITES, true);
     assert.strictEqual(config.MCP_SERVER_NAME, "custom-name");
     assert.strictEqual(config.MCP_SERVER_VERSION, "2.0.0");
   });
@@ -128,5 +132,32 @@ describe("ToolRegistry", () => {
 
     const result = await registry.getHandler("echo")({ hello: "world" });
     assert.strictEqual(result.content[0].text, '{"hello":"world"}');
+  });
+
+  it("hides and refuses mutating tools by default", async () => {
+    const registry = new ToolRegistry();
+    const handler = async () => ({ content: [{ type: "text", text: "mutated" }] });
+    registry.register({ name: "dangerous_write", description: "", inputSchema: { type: "object" } }, handler, {
+      mutating: true,
+    });
+
+    assert.deepStrictEqual(registry.getToolList(), []);
+    const result = await registry.getHandler("dangerous_write")({});
+    assert.strictEqual(result.isError, true);
+    assert.match(result.content[0].text, /WRITES_DISABLED/);
+  });
+
+  it("exposes mutating tools only when writes are explicitly enabled", () => {
+    const registry = new ToolRegistry(true);
+    const handler = async () => ({ content: [{ type: "text", text: "mutated" }] });
+    registry.register({ name: "enabled_write", description: "", inputSchema: { type: "object" } }, handler, {
+      mutating: true,
+    });
+
+    assert.deepStrictEqual(
+      registry.getToolList().map((tool) => tool.name),
+      ["enabled_write"]
+    );
+    assert.strictEqual(registry.getHandler("enabled_write"), handler);
   });
 });

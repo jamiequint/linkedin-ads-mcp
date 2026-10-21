@@ -129,7 +129,7 @@ export class CampaignTools {
             targetingCriteria: { type: "object" },
             format: { type: "string" },
             offsiteDeliveryEnabled: { type: "boolean" },
-            creativeSelection: { type: "string", enum: ["OPTIMIZED", "MANUAL"] },
+            creativeSelection: { type: "string", enum: ["OPTIMIZED", "ROUND_ROBIN"] },
           },
           required: ["accountId", "campaignGroupId", "name", "status", "objectiveType", "costType", "format"],
         },
@@ -181,7 +181,8 @@ export class CampaignTools {
           const message = error instanceof Error ? error.message : String(error);
           return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
         }
-      }
+      },
+      { mutating: true }
     );
 
     // 4. update_campaign
@@ -252,7 +253,8 @@ export class CampaignTools {
           const message = error instanceof Error ? error.message : String(error);
           return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
         }
-      }
+      },
+      { mutating: true }
     );
 
     // 5. delete_campaign — draft-aware
@@ -302,7 +304,8 @@ export class CampaignTools {
           const message = error instanceof Error ? error.message : String(error);
           return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
         }
-      }
+      },
+      { mutating: true }
     );
 
     // 6. get_campaign_performance — with standard metrics + campaign names

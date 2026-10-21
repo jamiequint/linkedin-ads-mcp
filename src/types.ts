@@ -13,6 +13,8 @@ export interface AdAccount {
   reference?: string;
   totalBudget?: BudgetAmount;
   type?: string;
+  productType?: "MARKETING_SOLUTIONS" | "TALENT_SOLUTIONS" | "LINKEDIN_ON_LINKEDIN";
+  originatingCustomer?: string;
 }
 
 export interface CampaignGroup {
@@ -24,6 +26,10 @@ export interface CampaignGroup {
   runSchedule?: RunSchedule;
   totalBudget?: BudgetAmount;
   allowedCampaignTypes?: string[];
+  billingReference?: string;
+  billingParentReference?: string;
+  beneficiaryReference?: { company?: string; organization?: string };
+  buyingType?: "AUCTION" | "RESERVATION";
 }
 
 export interface Campaign {
@@ -31,14 +37,7 @@ export interface Campaign {
   account: string;
   campaignGroup: string;
   name: string;
-  status:
-    | "ACTIVE"
-    | "PAUSED"
-    | "ARCHIVED"
-    | "COMPLETED"
-    | "CANCELED"
-    | "DRAFT"
-    | "PENDING_DELETION";
+  status: "ACTIVE" | "PAUSED" | "ARCHIVED" | "COMPLETED" | "CANCELED" | "DRAFT" | "PENDING_DELETION";
   type: string;
   costType: "CPM" | "CPC";
   objectiveType: string;
@@ -79,7 +78,24 @@ export interface AdCreative {
     created: { time: number };
     lastModified: { time: number };
   };
-  content?: { reference?: string; textAd?: { text?: string } };
+  content?: {
+    reference?: string;
+    textAd?: { text?: string };
+    standardUpdateAd?: { reference: string; contentAuthor?: string };
+    videoAd?: {
+      reference: string;
+      contentAuthor?: string;
+      preRollMetadata?: Record<string, unknown>;
+    };
+  };
+  metadata?: {
+    adFormat?: string;
+    adHeadline?: string;
+    adIntroductionText?: string;
+    adLine?: string;
+    landingPage?: string;
+    assetURL?: string;
+  };
   name?: string;
 }
 
@@ -194,12 +210,7 @@ export type DemographicPivot =
   | "MEMBER_REGION"
   | "MEMBER_REGION_V2";
 
-export type EntityPivot =
-  | "ACCOUNT"
-  | "CAMPAIGN_GROUP"
-  | "CAMPAIGN"
-  | "CREATIVE"
-  | "CONVERSION";
+export type EntityPivot = "ACCOUNT" | "CAMPAIGN_GROUP" | "CAMPAIGN" | "CREATIVE" | "CONVERSION";
 
 export type TimeGranularity = "ALL" | "DAILY" | "MONTHLY" | "YEARLY";
 
@@ -242,11 +253,23 @@ export interface SavedAudience {
   id: string;
   name: string;
   account: string;
-  type: "MATCHED" | "LOOKALIKE" | "PREDICTIVE";
-  status: "ACTIVE" | "EXPIRED" | "PROCESSING" | "FAILED";
+  type: "USER" | "COMPANY" | "USER_LIST_UPLOAD" | "COMPANY_LIST_UPLOAD";
+  sourcePlatform: "DIRECT_API" | "AGENCY_API" | "PARTNER_API" | "LIST_UPLOAD";
+  sourceSegmentId?: string;
+  description?: string;
+  inputCount?: number;
+  destinations?: Array<{
+    destination?: string;
+    destinationSegmentId?: string;
+    status?: string;
+    created?: number;
+    lastModified?: number;
+  }>;
+  status?: "ACTIVE" | "EXPIRED" | "PROCESSING" | "FAILED";
   memberCount?: number;
   matchRate?: number;
-  createdAt: number;
+  created?: number;
+  createdAt?: number;
   lastModified: number;
 }
 

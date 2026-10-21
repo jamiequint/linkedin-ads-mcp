@@ -157,7 +157,8 @@ export class CreativeTools {
           const message = error instanceof Error ? error.message : String(error);
           return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
         }
-      }
+      },
+      { mutating: true }
     );
 
     // 4. create_inline_ad
@@ -264,7 +265,8 @@ export class CreativeTools {
           const message = error instanceof Error ? error.message : String(error);
           return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
         }
-      }
+      },
+      { mutating: true }
     );
 
     // 5. update_creative_status
@@ -315,7 +317,8 @@ export class CreativeTools {
           const message = error instanceof Error ? error.message : String(error);
           return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
         }
-      }
+      },
+      { mutating: true }
     );
 
     // 6. get_creative_performance
@@ -511,7 +514,8 @@ export class CreativeTools {
           const message = error instanceof Error ? error.message : String(error);
           return { content: [{ type: "text", text: JSON.stringify({ error: message }) }], isError: true };
         }
-      }
+      },
+      { mutating: true }
     );
   }
 }

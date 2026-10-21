@@ -280,8 +280,8 @@ export class DemographicsTools {
             },
             audienceType: {
               type: "string",
-              enum: ["MATCHED", "LOOKALIKE", "PREDICTIVE"],
-              description: "Filter by audience type",
+              enum: ["USER", "COMPANY", "USER_LIST_UPLOAD", "COMPANY_LIST_UPLOAD"],
+              description: "Filter by DMP segment type",
             },
           },
           required: ["accountId"],
@@ -312,10 +312,16 @@ export class DemographicsTools {
                       id: a.id,
                       name: a.name,
                       type: a.type,
+                      sourcePlatform: a.sourcePlatform,
                       status: a.status,
+                      inputCount: a.inputCount,
+                      destinations: a.destinations,
                       memberCount: a.memberCount,
                       matchRate: a.matchRate,
-                      createdAt: new Date(a.createdAt).toISOString(),
+                      createdAt:
+                        a.created !== undefined || a.createdAt !== undefined
+                          ? new Date(a.created ?? a.createdAt!).toISOString()
+                          : undefined,
                       lastModified: new Date(a.lastModified).toISOString(),
                     })),
                     totalCount: audiences.length,

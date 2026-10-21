@@ -177,7 +177,9 @@ export class CampaignGroupTools {
       }
     };
 
-    registry.register(createCampaignGroupTool, createCampaignGroupHandler);
+    registry.register(createCampaignGroupTool, createCampaignGroupHandler, {
+      mutating: true,
+    });
 
     // ── 4. update_campaign_group ─────────────────────────────────────────
     const updateCampaignGroupTool: McpTool = {
@@ -240,7 +242,9 @@ export class CampaignGroupTools {
       }
     };
 
-    registry.register(updateCampaignGroupTool, updateCampaignGroupHandler);
+    registry.register(updateCampaignGroupTool, updateCampaignGroupHandler, {
+      mutating: true,
+    });
 
     // ── 5. delete_campaign_group ─────────────────────────────────────────
     const deleteCampaignGroupTool: McpTool = {
@@ -296,6 +300,8 @@ export class CampaignGroupTools {
       }
     };
 
-    registry.register(deleteCampaignGroupTool, deleteCampaignGroupHandler);
+    registry.register(deleteCampaignGroupTool, deleteCampaignGroupHandler, {
+      mutating: true,
+    });
   }
 }
